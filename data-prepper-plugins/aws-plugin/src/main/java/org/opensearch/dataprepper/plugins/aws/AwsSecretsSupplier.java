@@ -24,6 +24,8 @@ import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueReques
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
 import software.amazon.awssdk.services.secretsmanager.model.PutSecretValueRequest;
 import software.amazon.awssdk.services.secretsmanager.model.PutSecretValueResponse;
+import software.amazon.awssdk.services.secretsmanager.model.ResourceNotFoundException;
+import software.amazon.awssdk.services.secretsmanager.model.InvalidRequestException;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
@@ -38,14 +40,17 @@ public class AwsSecretsSupplier implements SecretsSupplier {
     private final Map<String, AwsSecretManagerConfiguration> awsSecretManagerConfigurationMap;
     private final Map<String, SecretsManagerClient> secretsManagerClientMap;
     private final ConcurrentMap<String, Object> secretIdToValue;
+    private final AwsSecretsManagerPluginMetrics awsSecretsManagerPluginMetrics;
 
     public AwsSecretsSupplier(
             final SecretValueDecoder secretValueDecoder,
             final AwsSecretPluginConfig awsSecretPluginConfig,
             final ObjectMapper objectMapper,
-            final AwsCredentialsSupplier awsCredentialsSupplier) {
+            final AwsCredentialsSupplier awsCredentialsSupplier,
+            final AwsSecretsManagerPluginMetrics awsSecretsManagerPluginMetrics) {
         this.secretValueDecoder = secretValueDecoder;
         this.objectMapper = objectMapper;
+        this.awsSecretsManagerPluginMetrics = awsSecretsManagerPluginMetrics;
         awsSecretManagerConfigurationMap = awsSecretPluginConfig
                 .getAwsSecretManagerConfigurationMap();
         secretsManagerClientMap = toSecretsManagerClientMap(awsSecretPluginConfig, awsCredentialsSupplier);
@@ -129,6 +134,7 @@ public class AwsSecretsSupplier implements SecretsSupplier {
         try {
             getSecretValueResponse = secretsManagerClient.getSecretValue(getSecretValueRequest);
         } catch (final AwsServiceException e) {
+            recordSecretsManagerException(e);
             LOG.error("Unable to retrieve secret {}: {}", getSecretValueRequest.secretId(), e.getMessage());
             throw new RuntimeException(
                     String.format("Unable to retrieve secret: %s",
@@ -144,6 +150,37 @@ public class AwsSecretsSupplier implements SecretsSupplier {
             return objectMapper.readValue(secretValueDecoder.decode(getSecretValueResponse), MAP_TYPE_REFERENCE);
         } catch (JsonProcessingException e) {
             return secretValueDecoder.decode(getSecretValueResponse);
+        }
+    }
+
+    /**
+     * Records metrics for Secrets Manager exceptions based on the exception type and error code.
+     * 
+     * @param exception the exception to analyze and record metrics for
+     */
+    private void recordSecretsManagerException(final Exception exception) {
+        if (exception instanceof ResourceNotFoundException) {
+            awsSecretsManagerPluginMetrics.getSecretsManagerNotFoundCounter().increment();
+        } else if (exception instanceof InvalidRequestException) {
+            final InvalidRequestException invalidRequestException = (InvalidRequestException) exception;
+            if (invalidRequestException.awsErrorDetails() != null && 
+                "Throttling".equals(invalidRequestException.awsErrorDetails().errorCode())) {
+                awsSecretsManagerPluginMetrics.getSecretsManagerThrottledCounter().increment();
+            }
+        } else if (exception instanceof AwsServiceException) {
+            final AwsServiceException awsServiceException = (AwsServiceException) exception;
+            if (awsServiceException.awsErrorDetails() != null) {
+                final String errorCode = awsServiceException.awsErrorDetails().errorCode();
+                if ("ThrottlingException".equals(errorCode) ||
+                    "Throttling".equals(errorCode) ||
+                    "RequestLimitExceeded".equals(errorCode)) {
+                    awsSecretsManagerPluginMetrics.getSecretsManagerThrottledCounter().increment();
+                } else if ("AccessDenied".equals(errorCode) ||
+                          "UnauthorizedOperation".equals(errorCode) ||
+                          "Forbidden".equals(errorCode)) {
+                    awsSecretsManagerPluginMetrics.getSecretsManagerAccessDeniedCounter().increment();
+                }
+            }
         }
     }
 
@@ -179,6 +216,12 @@ public class AwsSecretsSupplier implements SecretsSupplier {
             LOG.info("Updated key: {} in the secret {}. New version of the store is {}",
                     keyToUpdate, secretId, putSecretValueResponse.versionId());
             return putSecretValueResponse.versionId();
+        } catch (final AwsServiceException e) {
+            recordSecretsManagerException(e);
+            LOG.error("Failed to update secret {}: {}", secretId, e.getMessage());
+            throw new FailedToUpdatePluginConfigValueException(
+                    String.format("Failed to update the secret: %s to put a new value for the key: %s",
+                            awsSecretManagerConfiguration.getAwsSecretId(), keyToUpdate), e);
         } catch (Exception e) {
             throw new FailedToUpdatePluginConfigValueException(
                     String.format("Failed to update the secret: %s to put a new value for the key: %s",

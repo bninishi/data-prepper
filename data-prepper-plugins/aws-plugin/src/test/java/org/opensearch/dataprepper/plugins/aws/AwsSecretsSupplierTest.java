@@ -83,6 +83,9 @@ class AwsSecretsSupplierTest {
     @Mock
     private AwsCredentialsSupplier awsCredentialsSupplier;
 
+    @Mock
+    private AwsSecretsManagerPluginMetrics awsSecretsManagerPluginMetrics;
+
     private AwsSecretsSupplier objectUnderTest;
 
     @BeforeEach
@@ -100,7 +103,7 @@ class AwsSecretsSupplierTest {
     }
 
     private AwsSecretsSupplier createObjectUnderTest() {
-        return new AwsSecretsSupplier(secretValueDecoder, awsSecretPluginConfig, OBJECT_MAPPER, awsCredentialsSupplier);
+        return new AwsSecretsSupplier(secretValueDecoder, awsSecretPluginConfig, OBJECT_MAPPER, awsCredentialsSupplier, awsSecretsManagerPluginMetrics);
     }
 
     @Test
@@ -123,7 +126,7 @@ class AwsSecretsSupplierTest {
     @Test
     void testRetrieveValueInvalidKeyValuePair() {
         when(secretValueDecoder.decode(eq(getSecretValueResponse))).thenReturn(TEST_VALUE);
-        objectUnderTest = new AwsSecretsSupplier(secretValueDecoder, awsSecretPluginConfig, OBJECT_MAPPER, awsCredentialsSupplier);
+        objectUnderTest = new AwsSecretsSupplier(secretValueDecoder, awsSecretPluginConfig, OBJECT_MAPPER, awsCredentialsSupplier, awsSecretsManagerPluginMetrics);
         final Exception exception = assertThrows(IllegalArgumentException.class,
                 () -> objectUnderTest.retrieveValue(TEST_AWS_SECRET_CONFIGURATION_NAME, TEST_KEY));
         assertThat(exception.getMessage(), equalTo(String.format("The value under secretId: %s is not a valid json.",
@@ -144,7 +147,7 @@ class AwsSecretsSupplierTest {
         when(mockedObjectMapper.readValue(eq(testValue), eq(MAP_TYPE_REFERENCE))).thenReturn(Map.of("a", "b"));
         when(mockedObjectMapper.writeValueAsString(ArgumentMatchers.any())).thenThrow(mockedJsonProcessingException);
         when(secretValueDecoder.decode(eq(getSecretValueResponse))).thenReturn(testValue);
-        objectUnderTest = new AwsSecretsSupplier(secretValueDecoder, awsSecretPluginConfig, mockedObjectMapper, awsCredentialsSupplier);
+        objectUnderTest = new AwsSecretsSupplier(secretValueDecoder, awsSecretPluginConfig, mockedObjectMapper, awsCredentialsSupplier, awsSecretsManagerPluginMetrics);
         final Exception exception = assertThrows(IllegalArgumentException.class,
                 () -> objectUnderTest.retrieveValue(TEST_AWS_SECRET_CONFIGURATION_NAME));
         assertThat(exception.getMessage(), equalTo(String.format("Unable to read the value under secretId: %s as string.",
@@ -164,7 +167,7 @@ class AwsSecretsSupplierTest {
     void testConstructorWithGetSecretValueFailure(final Class<Throwable> exceptionClass) {
         when(secretsManagerClient.getSecretValue(eq(getSecretValueRequest))).thenThrow(exceptionClass);
         assertThrows(RuntimeException.class, () -> new AwsSecretsSupplier(
-                secretValueDecoder, awsSecretPluginConfig, OBJECT_MAPPER, awsCredentialsSupplier));
+                secretValueDecoder, awsSecretPluginConfig, OBJECT_MAPPER, awsCredentialsSupplier, awsSecretsManagerPluginMetrics));
     }
 
     @Test

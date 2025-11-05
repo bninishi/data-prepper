@@ -87,12 +87,13 @@ public class AwsSecretPlugin implements ExtensionPlugin {
 
     private void initializePluginConfigValueTranslator(final AwsCredentialsSupplier awsCredentialsSupplier) {
         if (awsSecretPluginConfig != null) {
+            pluginMetrics = PluginMetrics.fromNames("secrets", "aws");
+            final AwsSecretsManagerPluginMetrics awsSecretsManagerPluginMetrics = new AwsSecretsManagerPluginMetrics(pluginMetrics);
             final SecretValueDecoder secretValueDecoder = new SecretValueDecoder();
-            secretsSupplier = new AwsSecretsSupplier(secretValueDecoder, awsSecretPluginConfig, OBJECT_MAPPER, awsCredentialsSupplier);
+            secretsSupplier = new AwsSecretsSupplier(secretValueDecoder, awsSecretPluginConfig, OBJECT_MAPPER, awsCredentialsSupplier, awsSecretsManagerPluginMetrics);
             this.pluginConfigPublisher = new AwsSecretsPluginConfigPublisher();
             pluginConfigValueTranslator = new AwsSecretsPluginConfigValueTranslator(secretsSupplier);
             scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
-            pluginMetrics = PluginMetrics.fromNames("secrets", "aws");
             submitSecretsRefreshJobs(awsSecretPluginConfig, secretsSupplier);
         } else {
             pluginConfigValueTranslator = null;
